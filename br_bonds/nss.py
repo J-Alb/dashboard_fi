@@ -249,7 +249,7 @@ def fit_nss(
 
     else:
         if lam1_grid is None:
-            lam1_grid = np.arange(0.1, 8.1, 0.1)   # wider: covers PREF λ₁~3.26
+            lam1_grid = np.arange(0.1, 5.1, 0.1)    # covers PREF λ₁~3.26, IPCA λ₁~1.33
         if lam2_grid is None:
             lam2_grid = np.arange(0.05, 3.05, 0.05) # finer: covers PREF λ₂~0.18
 
@@ -263,7 +263,7 @@ def fit_nss(
             l1, l2 = lam_trial[0], lam_trial[1]
             if l1 - l2 < min_lam_sep:
                 return 1e12
-            if l1 > 10.0 or l2 > 10.0 or l1 <= 0 or l2 <= 0:
+            if l1 > 5.0 or l2 > 5.0 or l1 <= 0 or l2 <= 0:
                 return 1e12
             _, ssr = _wls(l1, l2)
             return ssr
