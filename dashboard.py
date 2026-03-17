@@ -204,16 +204,22 @@ def _build_curves(ref_date: date, cdi_pct: float):
 
 @st.cache_data(show_spinner='Fitting NSS curves…')
 def _fit_nss_curves(ref_date: date, cdi_pct: float):
-    """Fit NSS to Pre (from live zero curve) and IPCA (from panel) for a single date."""
+    """
+    Fit NSS to Pre (from live zero curve) and IPCA (from panel) for a single date.
+    Returns (nss_pre, nss_ipca, du_range_pre, du_range_ipca)
+    where du_range = (du_min, du_max) of the data used for fitting.
+    """
     zc_pre, _ = _build_curves(ref_date, cdi_pct)
-    nss_pre = None
+    nss_pre, range_pre = None, (126, 2520)
     if zc_pre is not None and len(zc_pre) >= 4:
         try:
-            nss_pre = fit_nss(zc_pre['du'].values, zc_pre['zero_rate'].values)
+            du_vals = zc_pre['du'].values
+            nss_pre  = fit_nss(du_vals, zc_pre['zero_rate'].values)
+            range_pre = (float(du_vals.min()), float(du_vals.max()))
         except Exception:
             pass
 
-    nss_ipca = None
+    nss_ipca, range_ipca = None, (126, 2520)
     if (_DATA / 'breakeven_panel_bfuts.parquet').exists():
         try:
             pb = pd.read_parquet(_DATA / 'breakeven_panel_bfuts.parquet')
@@ -223,11 +229,13 @@ def _fit_nss_curves(ref_date: date, cdi_pct: float):
             if ts in pivot_ipca.index:
                 row = pivot_ipca.loc[ts].dropna()
                 if len(row) >= 4:
-                    nss_ipca = fit_nss(row.index.values.astype(float), row.values / 100)
+                    du_vals   = row.index.values.astype(float)
+                    nss_ipca  = fit_nss(du_vals, row.values / 100)
+                    range_ipca = (float(du_vals.min()), float(du_vals.max()))
         except Exception:
             pass
 
-    return nss_pre, nss_ipca
+    return nss_pre, nss_ipca, range_pre, range_ipca
 
 
 @st.cache_data(show_spinner='Fitting COPOM…')
@@ -317,9 +325,11 @@ if show_comp and comp_date:
 dec_t  = _fit_copom(sel_date, cdi_t)
 dec_1m = _fit_copom(comp_date, cdi_1m) if show_comp and comp_date else None
 
-nss_pre_t, nss_ipca_t   = _fit_nss_curves(sel_date, cdi_t)
-nss_pre_1m, nss_ipca_1m = (_fit_nss_curves(comp_date, cdi_1m)
-                            if show_comp and comp_date else (None, None))
+nss_pre_t, nss_ipca_t, range_pre_t, range_ipca_t = _fit_nss_curves(sel_date, cdi_t)
+nss_pre_1m, nss_ipca_1m, range_pre_1m, range_ipca_1m = (
+    _fit_nss_curves(comp_date, cdi_1m)
+    if show_comp and comp_date else (None, None, (126, 2520), (126, 2520))
+)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -337,8 +347,8 @@ def _di1_xy(crv):
     r = np.array([crv.ytm(int(x)) * 100 for x in d])
     return d / 252, r
 
-def _nss_xy(nss, du_min=21, du_max=2520):
-    d = du_grid[(du_grid >= du_min) & (du_grid <= du_max)]
+def _nss_xy(nss, du_range=(126, 2520)):
+    d = du_grid[(du_grid >= du_range[0]) & (du_grid <= du_range[1])]
     r = nss.ytm(d) * 100
     return d / 252, r
 
@@ -378,7 +388,7 @@ with tab1:
         fig_nss = go.Figure()
 
         if nss_pre_t is not None:
-            x, y = _nss_xy(nss_pre_t)
+            x, y = _nss_xy(nss_pre_t, range_pre_t)
             fig_nss.add_trace(go.Scatter(
                 x=x, y=y, name=f'Prefixado {lbl_t}',
                 line=dict(color=C_PRE_T, width=2.5),
@@ -388,7 +398,7 @@ with tab1:
             st.warning('Prefixado zero curve unavailable for this date.')
 
         if nss_ipca_t is not None:
-            x, y = _nss_xy(nss_ipca_t)
+            x, y = _nss_xy(nss_ipca_t, range_ipca_t)
             fig_nss.add_trace(go.Scatter(
                 x=x, y=y, name=f'IPCA {lbl_t}',
                 line=dict(color=C_NTNB_T, width=2.5),
@@ -396,7 +406,7 @@ with tab1:
             ))
 
         if show_comp and nss_pre_1m is not None:
-            x, y = _nss_xy(nss_pre_1m)
+            x, y = _nss_xy(nss_pre_1m, range_pre_1m)
             fig_nss.add_trace(go.Scatter(
                 x=x, y=y, name=f'Prefixado {lbl_1m}',
                 line=dict(color=C_PRE_1M, width=1.8, dash='dash'),
@@ -404,7 +414,7 @@ with tab1:
             ))
 
         if show_comp and nss_ipca_1m is not None:
-            x, y = _nss_xy(nss_ipca_1m)
+            x, y = _nss_xy(nss_ipca_1m, range_ipca_1m)
             fig_nss.add_trace(go.Scatter(
                 x=x, y=y, name=f'IPCA {lbl_1m}',
                 line=dict(color=C_NTNB_1M, width=1.8, dash='dash'),
