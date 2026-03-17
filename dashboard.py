@@ -744,6 +744,34 @@ with tab4:
             brkv   = ((1 + r_nom) / (1 + r_real) - 1) * 100
             return d / 252, brkv
 
+        # ── Compute shared y-axis range across both plots ────────────────────
+        _all_brkv_y = []
+
+        def _collect(y):
+            if y is not None:
+                _all_brkv_y.extend(y[np.isfinite(y)].tolist())
+
+        for _nss_nom, _nss_real, _rn, _rr in [
+            (nss_pre_t,  nss_ipca_t,  range_pre_t,  range_ipca_t),
+            (nss_pre_1m, nss_ipca_1m, range_pre_1m, range_ipca_1m),
+        ]:
+            if _nss_nom is not None and _nss_real is not None:
+                _, _y = _nss_brkv_xy(_nss_nom, _nss_real, _rn, _rr)
+                _collect(_y)
+
+        for _piv, _d in [(pivot_pre_brkv, sel_date), (pivot_fut_brkv, sel_date),
+                         (pivot_pre_brkv, comp_date), (pivot_fut_brkv, comp_date)]:
+            if _d is not None:
+                _, _y = _spot_brkv_curve(_piv, _d)
+                _collect(np.asarray(_y))
+
+        if _all_brkv_y:
+            _pad = 0.2
+            _brkv_ymin = min(_all_brkv_y) - _pad
+            _brkv_ymax = max(_all_brkv_y) + _pad
+        else:
+            _brkv_ymin, _brkv_ymax = None, None
+
         col_nss, col_ff = st.columns(2)
 
         # ── Left: NSS breakeven ───────────────────────────────────────────────
@@ -778,6 +806,7 @@ with tab4:
                 xaxis_title='Prazo (anos)',
                 yaxis_title='Breakeven (% a.a.)',
                 yaxis_ticksuffix='%', yaxis_tickformat='.1f',
+                yaxis_range=[_brkv_ymin, _brkv_ymax] if _brkv_ymin is not None else None,
                 hovermode='x unified', height=400, font=_FONT,
                 legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
                 margin=dict(t=50),
@@ -816,6 +845,7 @@ with tab4:
                 xaxis_title='Prazo (anos)',
                 yaxis_title='Breakeven (% a.a.)',
                 yaxis_ticksuffix='%', yaxis_tickformat='.1f',
+                yaxis_range=[_brkv_ymin, _brkv_ymax] if _brkv_ymin is not None else None,
                 hovermode='x unified', height=400, font=_FONT,
                 legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
                 margin=dict(t=50),
