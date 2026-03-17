@@ -8,4 +8,3 @@ bizdays>=1.0
 python-bcb>=0.2
 requests>=2.31
 python-dateutil>=2.9
-git+https://github.com/J-Alb/br_bonds.git@main
