@@ -134,6 +134,18 @@ def _fwd_brkv(pivot_nom: pd.DataFrame, pivot_real: pd.DataFrame,
 
 @st.cache_data(show_spinner='Fetching CDI overnight…')
 def _get_cdi(ref_date: date) -> float:
+    # 1. Try local parquet (committed alongside parquet data files — always works on cloud)
+    _cdi_path = _DATA / 'cdi_series.parquet'
+    if _cdi_path.exists():
+        try:
+            df_loc = pd.read_parquet(_cdi_path)
+            df_loc['date'] = pd.to_datetime(df_loc['date'])
+            df_loc = df_loc[df_loc['date'] <= pd.Timestamp(ref_date)].sort_values('date')
+            if not df_loc.empty:
+                return float(df_loc['cdi_annual'].iloc[-1])
+        except Exception:
+            pass
+    # 2. Fall back to BCB API (works locally, may fail on cloud)
     try:
         from bcb import sgs
         start  = pd.Timestamp(ref_date) - pd.Timedelta(days=10)
