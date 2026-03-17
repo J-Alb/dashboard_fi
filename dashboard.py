@@ -226,7 +226,7 @@ def _fit_nss_curves(ref_date: date, cdi_pct: float):
     if zc_pre is not None and len(zc_pre) >= 4:
         try:
             du_vals = zc_pre['du'].values
-            nss_pre  = fit_nss(du_vals, zc_pre['zero_rate'].values)
+            nss_pre  = fit_nss(du_vals, zc_pre['zero_rate'].values, global_search=True)
             range_pre = (float(du_vals.min()), float(du_vals.max()))
         except Exception:
             pass
