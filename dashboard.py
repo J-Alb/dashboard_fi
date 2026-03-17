@@ -32,6 +32,7 @@ from br_bonds.secondary import (
 from br_bonds import PrefixadoCurve
 from br_bonds.derivatives.di1 import DI1Curve
 from br_bonds.derivatives.copom import CopomCurve, COPOM_DATES
+from br_bonds.nss import fit_nss
 
 # ── page config ───────────────────────────────────────────────────────────────
 
@@ -201,6 +202,34 @@ def _build_curves(ref_date: date, cdi_pct: float):
     return zc_pre, di1_crv
 
 
+@st.cache_data(show_spinner='Fitting NSS curves…')
+def _fit_nss_curves(ref_date: date, cdi_pct: float):
+    """Fit NSS to Pre (from live zero curve) and IPCA (from panel) for a single date."""
+    zc_pre, _ = _build_curves(ref_date, cdi_pct)
+    nss_pre = None
+    if zc_pre is not None and len(zc_pre) >= 4:
+        try:
+            nss_pre = fit_nss(zc_pre['du'].values, zc_pre['zero_rate'].values)
+        except Exception:
+            pass
+
+    nss_ipca = None
+    if (_DATA / 'breakeven_panel_bfuts.parquet').exists():
+        try:
+            pb = pd.read_parquet(_DATA / 'breakeven_panel_bfuts.parquet')
+            pb['date'] = pd.to_datetime(pb['date'])
+            pivot_ipca = pb.pivot_table(values='r_real', columns='du', index='date')
+            ts = pd.Timestamp(ref_date)
+            if ts in pivot_ipca.index:
+                row = pivot_ipca.loc[ts].dropna()
+                if len(row) >= 4:
+                    nss_ipca = fit_nss(row.index.values.astype(float), row.values / 100)
+        except Exception:
+            pass
+
+    return nss_pre, nss_ipca
+
+
 @st.cache_data(show_spinner='Fitting COPOM…')
 def _fit_copom(ref_date: date, cdi_pct: float):
     _, di1_crv = _build_curves(ref_date, cdi_pct)
@@ -288,6 +317,10 @@ if show_comp and comp_date:
 dec_t  = _fit_copom(sel_date, cdi_t)
 dec_1m = _fit_copom(comp_date, cdi_1m) if show_comp and comp_date else None
 
+nss_pre_t, nss_ipca_t   = _fit_nss_curves(sel_date, cdi_t)
+nss_pre_1m, nss_ipca_1m = (_fit_nss_curves(comp_date, cdi_1m)
+                            if show_comp and comp_date else (None, None))
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -304,6 +337,24 @@ def _di1_xy(crv):
     r = np.array([crv.ytm(int(x)) * 100 for x in d])
     return d / 252, r
 
+def _nss_xy(nss, du_min=21, du_max=2520):
+    d = du_grid[(du_grid >= du_min) & (du_grid <= du_max)]
+    r = nss.ytm(d) * 100
+    return d / 252, r
+
+def _dap_xy(pivot_real, ref_date):
+    ts = pd.Timestamp(ref_date)
+    if ts not in pivot_real.index:
+        return None, None
+    row = pivot_real.loc[ts].dropna()
+    if len(row) < 2:
+        return None, None
+    zc = pd.DataFrame({'du': row.index.values.astype(float), 'zero_rate': row.values / 100})
+    lo, hi = float(zc['du'].min()), float(zc['du'].max())
+    d = du_grid[(du_grid >= lo) & (du_grid <= hi)]
+    r = _flatfwd_ytm(zc, d) * 100
+    return d / 252, r
+
 
 # ── tabs ──────────────────────────────────────────────────────────────────────
 
@@ -315,76 +366,161 @@ tab1, tab2, tab3, tab4 = st.tabs(['Curvas', 'COPOM', 'Série Histórica', 'Break
 # ════════════════════════════════════════════════════════════════════════════
 
 with tab1:
-    st.subheader('Estrutura a Termo: Prefixada (LTN/NTN-F) vs DI1')
-
-    fig1 = go.Figure()
-
     lbl_t  = pd.Timestamp(sel_date).strftime('%d/%m/%Y')
     lbl_1m = pd.Timestamp(comp_date).strftime('%d/%m/%Y') if comp_date else ''
 
-    if zc_t is not None:
-        x, y = _pre_xy(zc_t)
-        fig1.add_trace(go.Scatter(
-            x=x, y=y, name=f'Prefixado {lbl_t}',
-            line=dict(color=C_PRE_T, width=2.5),
-            hovertemplate='%{y:.2f}%<extra>Prefixado ' + lbl_t + '</extra>',
+    sub_pre_ipca, sub_di1_dap = st.tabs(['Pre & IPCA (NSS)', 'DI1 & DAP (Flat-Forward)'])
+
+    # ── Subtab A: Pre & IPCA — NSS smooth curves ─────────────────────────────
+    with sub_pre_ipca:
+        st.subheader('Estrutura a Termo: Prefixado (NSS) vs IPCA (NSS)')
+
+        fig_nss = go.Figure()
+
+        if nss_pre_t is not None:
+            x, y = _nss_xy(nss_pre_t)
+            fig_nss.add_trace(go.Scatter(
+                x=x, y=y, name=f'Prefixado {lbl_t}',
+                line=dict(color=C_PRE_T, width=2.5),
+                hovertemplate='%{y:.2f}%<extra>Prefixado ' + lbl_t + '</extra>',
+            ))
+        else:
+            st.warning('Prefixado zero curve unavailable for this date.')
+
+        if nss_ipca_t is not None:
+            x, y = _nss_xy(nss_ipca_t)
+            fig_nss.add_trace(go.Scatter(
+                x=x, y=y, name=f'IPCA {lbl_t}',
+                line=dict(color=C_NTNB_T, width=2.5),
+                hovertemplate='%{y:.2f}%<extra>IPCA ' + lbl_t + '</extra>',
+            ))
+
+        if show_comp and nss_pre_1m is not None:
+            x, y = _nss_xy(nss_pre_1m)
+            fig_nss.add_trace(go.Scatter(
+                x=x, y=y, name=f'Prefixado {lbl_1m}',
+                line=dict(color=C_PRE_1M, width=1.8, dash='dash'),
+                hovertemplate='%{y:.2f}%<extra>Prefixado ' + lbl_1m + '</extra>',
+            ))
+
+        if show_comp and nss_ipca_1m is not None:
+            x, y = _nss_xy(nss_ipca_1m)
+            fig_nss.add_trace(go.Scatter(
+                x=x, y=y, name=f'IPCA {lbl_1m}',
+                line=dict(color=C_NTNB_1M, width=1.8, dash='dash'),
+                hovertemplate='%{y:.2f}%<extra>IPCA ' + lbl_1m + '</extra>',
+            ))
+
+        fig_nss.update_layout(
+            xaxis_title='Prazo (anos)',
+            yaxis_title='Taxa real/nominal (% a.a.)',
+            yaxis_tickformat='.1f',
+            yaxis_ticksuffix='%',
+            hovermode='x unified',
+            height=480,
+            font=_FONT,
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
+            margin=dict(t=60),
+        )
+        st.plotly_chart(fig_nss, use_container_width=True)
+
+        # NSS diagnostics
+        if nss_pre_t is not None or nss_ipca_t is not None:
+            with st.expander('Parâmetros NSS'):
+                rows = []
+                for label, nss in [('Prefixado', nss_pre_t), ('IPCA', nss_ipca_t)]:
+                    if nss is not None:
+                        b, l = nss.beta, nss.lam
+                        rows.append({
+                            'Curva': label,
+                            'β₁': round(b[0]*100, 4),
+                            'β₂': round(b[1]*100, 4),
+                            'β₃': round(b[2]*100, 4),
+                            'β₄': round(b[3]*100, 4),
+                            'λ₁': round(l[0], 4),
+                            'λ₂': round(l[1], 4),
+                            'RMSE (bps)': round(nss.rmse * 10000, 2),
+                            'R²': round(nss.r2, 6),
+                        })
+                if rows:
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # ── Subtab B: DI1 & DAP — flat-forward ───────────────────────────────────
+    with sub_di1_dap:
+        st.subheader('Estrutura a Termo: DI1 vs DAP (Flat-Forward)')
+
+        fig_ff = go.Figure()
+
+        # DI1
+        x, y = _di1_xy(di1_t)
+        fig_ff.add_trace(go.Scatter(
+            x=x, y=y, name=f'DI1 {lbl_t}',
+            line=dict(color=C_DI1_T, width=2.5),
+            hovertemplate='%{y:.2f}%<extra>DI1 ' + lbl_t + '</extra>',
         ))
 
-    x, y = _di1_xy(di1_t)
-    fig1.add_trace(go.Scatter(
-        x=x, y=y, name=f'DI1 {lbl_t}',
-        line=dict(color=C_DI1_T, width=2.5),
-        hovertemplate='%{y:.2f}%<extra>DI1 ' + lbl_t + '</extra>',
-    ))
+        # DAP
+        if (_DATA / 'breakeven_panel_futures.parquet').exists():
+            _pf = pd.read_parquet(_DATA / 'breakeven_panel_futures.parquet')
+            _pf['date'] = pd.to_datetime(_pf['date'])
+            _pivot_dap = _pf.pivot_table(values='r_real', columns='du', index='date')
 
-    if show_comp and zc_1m is not None:
-        x, y = _pre_xy(zc_1m)
-        fig1.add_trace(go.Scatter(
-            x=x, y=y, name=f'Prefixado {lbl_1m}',
-            line=dict(color=C_PRE_1M, width=1.8, dash='dash'),
-            hovertemplate='%{y:.2f}%<extra>Prefixado ' + lbl_1m + '</extra>',
-        ))
+            x, y = _dap_xy(_pivot_dap, sel_date)
+            if x is not None:
+                fig_ff.add_trace(go.Scatter(
+                    x=x, y=y, name=f'DAP {lbl_t}',
+                    line=dict(color=C_DAP_T, width=2.5),
+                    hovertemplate='%{y:.2f}%<extra>DAP ' + lbl_t + '</extra>',
+                ))
 
-    if show_comp and di1_1m is not None:
-        x, y = _di1_xy(di1_1m)
-        fig1.add_trace(go.Scatter(
-            x=x, y=y, name=f'DI1 {lbl_1m}',
-            line=dict(color=C_DI1_1M, width=1.8, dash='dash'),
-            hovertemplate='%{y:.2f}%<extra>DI1 ' + lbl_1m + '</extra>',
-        ))
+            if show_comp:
+                if di1_1m is not None:
+                    x, y = _di1_xy(di1_1m)
+                    fig_ff.add_trace(go.Scatter(
+                        x=x, y=y, name=f'DI1 {lbl_1m}',
+                        line=dict(color=C_DI1_1M, width=1.8, dash='dash'),
+                        hovertemplate='%{y:.2f}%<extra>DI1 ' + lbl_1m + '</extra>',
+                    ))
 
-    fig1.update_layout(
-        xaxis_title='Prazo (anos)',
-        yaxis_title='Taxa (% a.a.)',
-        yaxis_tickformat='.1f',
-        yaxis_ticksuffix='%',
-        hovermode='x unified',
-        height=480,
-        font=_FONT,
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
-        margin=dict(t=60),
-    )
-    st.plotly_chart(fig1, use_container_width=True)
+                x, y = _dap_xy(_pivot_dap, comp_date)
+                if x is not None:
+                    fig_ff.add_trace(go.Scatter(
+                        x=x, y=y, name=f'DAP {lbl_1m}',
+                        line=dict(color=C_DAP_1M, width=1.8, dash='dash'),
+                        hovertemplate='%{y:.2f}%<extra>DAP ' + lbl_1m + '</extra>',
+                    ))
+        else:
+            st.warning('Futures panel not found — run update_all.py first.')
 
-    # Metrics row
-    col1, col2, col3, col4 = st.columns(4)
-    for du_show, lbl in [(252, '1Y'), (504, '2Y'), (1008, '4Y'), (1260, '5Y')]:
-        val_pre = _flatfwd_ytm(zc_t, np.array([float(du_show)]))[0] * 100 if zc_t is not None else None
-        val_di1 = di1_t.ytm(du_show) * 100 if di1_t.ytm(du_show) else None
-        spread  = (val_pre - val_di1) if val_pre and val_di1 else None
+        fig_ff.update_layout(
+            xaxis_title='Prazo (anos)',
+            yaxis_title='Taxa (% a.a.)',
+            yaxis_tickformat='.1f',
+            yaxis_ticksuffix='%',
+            hovermode='x unified',
+            height=480,
+            font=_FONT,
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
+            margin=dict(t=60),
+        )
+        st.plotly_chart(fig_ff, use_container_width=True)
 
-    for col, (du_show, lbl) in zip([col1, col2, col3, col4],
-                                    [(252,'1Y'),(504,'2Y'),(1008,'4Y'),(1260,'5Y')]):
-        val_pre = _flatfwd_ytm(zc_t, np.array([float(du_show)]))[0] * 100 if zc_t is not None else None
-        ytm_di1 = di1_t.ytm(du_show)
-        val_di1 = ytm_di1 * 100 if ytm_di1 is not None else None
-        spread  = round(val_pre - val_di1, 2) if val_pre is not None and val_di1 is not None else None
-        with col:
-            st.metric(
-                label=f'Prefixado {lbl} vs DI1',
-                value=f'{val_pre:.2f}%' if val_pre else 'n/a',
-                delta=f'{spread:+.2f}pp spread' if spread is not None else None,
-            )
+        # Metrics: Pre vs DI1
+        st.markdown(f'**Prefixado vs DI1 — {lbl_t}**')
+        col1, col2, col3, col4 = st.columns(4)
+        for col, (du_show, lbl) in zip([col1, col2, col3, col4],
+                                        [(252,'1Y'),(504,'2Y'),(1008,'4Y'),(1260,'5Y')]):
+            val_pre = (nss_pre_t.ytm(float(du_show)) * 100
+                       if nss_pre_t is not None else None)
+            ytm_di1 = di1_t.ytm(du_show)
+            val_di1 = ytm_di1 * 100 if ytm_di1 is not None else None
+            spread  = round(val_pre - val_di1, 2) if val_pre is not None and val_di1 is not None else None
+            with col:
+                st.metric(
+                    label=f'Prefixado {lbl} vs DI1',
+                    value=f'{val_pre:.2f}%' if val_pre is not None else 'n/a',
+                    delta=f'{spread:+.2f}pp spread' if spread is not None else None,
+                )
 
 
 # ════════════════════════════════════════════════════════════════════════════
