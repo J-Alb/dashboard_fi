@@ -103,6 +103,19 @@ def _load_panels():
             pivot_fut_nom, pivot_fut_real, pivot_fut_brkv)
 
 
+@st.cache_data(show_spinner='Loading NSS panel…')
+def _load_nss_panel():
+    path = _DATA / 'breakeven_panel_nss.parquet'
+    if not path.exists():
+        return None, None, None
+    pb = pd.read_parquet(path)
+    pb['date'] = pd.to_datetime(pb['date'])
+    pivot_brkv = pb.pivot_table(values='breakeven', columns='du', index='date')
+    pivot_nom  = pb.pivot_table(values='r_nominal', columns='du', index='date')
+    pivot_real = pb.pivot_table(values='r_real',    columns='du', index='date')
+    return pivot_brkv, pivot_nom, pivot_real
+
+
 def _fwd_brkv(pivot_nom: pd.DataFrame, pivot_real: pd.DataFrame,
               du1: float, du2: float) -> pd.Series:
     """
@@ -711,6 +724,7 @@ with tab4:
     else:
         (pivot_pre_nom, pivot_pre_real, pivot_pre_brkv,
          pivot_fut_nom, pivot_fut_real, pivot_fut_brkv) = _load_panels()
+        nss_pivot_brkv, nss_pivot_nom, nss_pivot_real = _load_nss_panel()
 
         pivot_pre_nom  = pivot_pre_nom.loc[pivot_pre_nom.index   >= pd.Timestamp(ts_start)]
         pivot_pre_real = pivot_pre_real.loc[pivot_pre_real.index >= pd.Timestamp(ts_start)]
@@ -718,6 +732,11 @@ with tab4:
         pivot_fut_nom  = pivot_fut_nom.loc[pivot_fut_nom.index   >= pd.Timestamp(ts_start)]
         pivot_fut_real = pivot_fut_real.loc[pivot_fut_real.index >= pd.Timestamp(ts_start)]
         pivot_fut_brkv = pivot_fut_brkv.loc[pivot_fut_brkv.index >= pd.Timestamp(ts_start)]
+
+        if nss_pivot_brkv is not None:
+            nss_pivot_brkv = nss_pivot_brkv.loc[nss_pivot_brkv.index >= pd.Timestamp(ts_start)]
+            nss_pivot_nom  = nss_pivot_nom.loc[nss_pivot_nom.index   >= pd.Timestamp(ts_start)]
+            nss_pivot_real = nss_pivot_real.loc[nss_pivot_real.index >= pd.Timestamp(ts_start)]
 
         # ── Section 1: spot breakeven curves (snapshot) ──────────────────────
         st.subheader('Curva de Breakeven — Estrutura a Termo')
@@ -871,11 +890,15 @@ with tab4:
             subplot_titles=[f'{lbl}' for _, _, lbl in FWD_TENORS],
         )
 
+        _nss_fwd_sources = []
+        if nss_pivot_nom is not None and nss_pivot_real is not None:
+            _nss_fwd_sources = [(nss_pivot_nom, nss_pivot_real, 'NSS', 'dot')]
+
         for row, ((du1, du2, lbl), color) in enumerate(zip(FWD_TENORS, FWD_COLORS), start=1):
             for pivot_nom, pivot_real, src_lbl, dash in [
                 (pivot_pre_nom, pivot_pre_real, 'Bonds',   'solid'),
                 (pivot_fut_nom, pivot_fut_real, 'Futuros', 'dash'),
-            ]:
+            ] + _nss_fwd_sources:
                 if not _has_cols(pivot_nom, du1, du2) or not _has_cols(pivot_real, du1, du2):
                     continue
 
@@ -926,3 +949,57 @@ with tab4:
             with col:
                 st.metric(f'Bonds {lbl}',   f'{val_bonds:.2f}%' if val_bonds else 'n/a')
                 st.metric(f'Futuros {lbl}', f'{val_fut:.2f}%'   if val_fut   else 'n/a')
+
+        # ── Section 3: NSS breakeven spot — time series ───────────────────────
+        if nss_pivot_brkv is not None:
+            st.markdown('---')
+            st.subheader('Breakeven NSS — Série Histórica por Vencimento')
+
+            _nss_cols = np.array(nss_pivot_brkv.columns, dtype=float)
+
+            if not sel_tenors:
+                st.info('Select at least one tenor in the sidebar.')
+            else:
+                _NSS_TS_COLORS = ['#2e86ab', '#e84855', '#3bb273', '#f5a623', '#7b1c00']
+                fig_nss_ts = go.Figure()
+
+                for i, du_req in enumerate(sel_tenors):
+                    nearest_du = float(_nss_cols[np.argmin(np.abs(_nss_cols - du_req))])
+                    s = nss_pivot_brkv[nearest_du].dropna()
+                    color = _NSS_TS_COLORS[i % len(_NSS_TS_COLORS)]
+                    fig_nss_ts.add_trace(go.Scatter(
+                        x=s.index, y=s.values,
+                        name=tenor_lbls.get(du_req, f'du={du_req}'),
+                        line=dict(color=color, width=1.5),
+                        hovertemplate='%{y:.2f}%<extra>' + tenor_lbls.get(du_req, f'du={du_req}') + '</extra>',
+                    ))
+
+                fig_nss_ts.add_vline(
+                    x=pd.Timestamp(sel_date).timestamp() * 1000,
+                    line=dict(color='gray', width=1, dash='dot'),
+                )
+                fig_nss_ts.update_layout(
+                    xaxis_title='Data',
+                    yaxis_title='Breakeven NSS (% a.a.)',
+                    yaxis_ticksuffix='%', yaxis_tickformat='.1f',
+                    hovermode='x unified',
+                    height=420,
+                    font=_FONT,
+                    legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
+                    margin=dict(t=60),
+                )
+                st.plotly_chart(fig_nss_ts, use_container_width=True)
+
+                # Current NSS spot breakeven values at selected tenors
+                _ts_ref = pd.Timestamp(sel_date)
+                if _ts_ref in nss_pivot_brkv.index:
+                    st.markdown(f'**Breakeven NSS implícito em {lbl_t}**')
+                    _nss_cols_show = st.columns(len(sel_tenors))
+                    for _col_w, du_req in zip(_nss_cols_show, sel_tenors):
+                        nearest_du = float(_nss_cols[np.argmin(np.abs(_nss_cols - du_req))])
+                        val = float(nss_pivot_brkv.loc[_ts_ref, nearest_du]) if nearest_du in nss_pivot_brkv.columns else None
+                        with _col_w:
+                            st.metric(
+                                label=tenor_lbls.get(du_req, f'du={du_req}'),
+                                value=f'{val:.2f}%' if val is not None and np.isfinite(val) else 'n/a',
+                            )
