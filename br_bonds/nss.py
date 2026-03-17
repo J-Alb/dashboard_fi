@@ -260,9 +260,12 @@ def fit_nss(
             lam_trial = list(fixed_val)
             for fi, xi in zip(free_idx, x_free):
                 lam_trial[fi] = float(xi)
-            if lam_trial[0] - lam_trial[1] < min_lam_sep:
+            l1, l2 = lam_trial[0], lam_trial[1]
+            if l1 - l2 < min_lam_sep:
                 return 1e12
-            _, ssr = _wls(lam_trial[0], lam_trial[1])
+            if l1 > 10.0 or l2 > 10.0 or l1 <= 0 or l2 <= 0:
+                return 1e12
+            _, ssr = _wls(l1, l2)
             return ssr
 
         best_ssr  = np.inf
