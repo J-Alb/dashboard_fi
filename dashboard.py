@@ -720,11 +720,8 @@ with tab4:
         pivot_fut_brkv = pivot_fut_brkv.loc[pivot_fut_brkv.index >= pd.Timestamp(ts_start)]
 
         # ── Section 1: spot breakeven curves (snapshot) ──────────────────────
-        st.subheader('Curva de Breakeven: Bonds (NTN-B/Pre) vs Futuros (DAP/DI1)')
+        st.subheader('Curva de Breakeven — Estrutura a Termo')
 
-        fig_brkv = go.Figure()
-
-        # get spot breakeven from panel for the selected date
         def _spot_brkv_curve(pivot_brkv, date):
             ts = pd.Timestamp(date)
             if ts not in pivot_brkv.index:
@@ -733,38 +730,97 @@ with tab4:
             row = pivot_brkv.loc[ts].dropna()
             return row.index.values / 252, row.values  # (years, breakeven%)
 
-        for pivot_brkv, color, dash, lbl in [
-            (pivot_pre_brkv, C_PRE_T,  'solid', f'Bonds (NTN-B/Pre)  {lbl_t}'),
-            (pivot_fut_brkv, C_DI1_T,  'solid', f'Futuros (DAP/DI1)  {lbl_t}'),
-        ]:
-            x, y = _spot_brkv_curve(pivot_brkv, sel_date)
-            fig_brkv.add_trace(go.Scatter(
-                x=x, y=y, name=lbl,
-                line=dict(color=color, width=2.5, dash=dash),
-                hovertemplate='%{y:.2f}%<extra>' + lbl + '</extra>',
-            ))
+        def _nss_brkv_xy(nss_nom, nss_real, range_nom, range_real):
+            """Breakeven from NSS curves: (1+nom)/(1+real) - 1, in % p.a."""
+            lo = max(range_nom[0], range_real[0])
+            hi = min(range_nom[1], range_real[1])
+            if lo >= hi:
+                return None, None
+            d = du_grid[(du_grid >= lo) & (du_grid <= hi)]
+            if len(d) == 0:
+                return None, None
+            r_nom  = nss_nom.ytm(d)
+            r_real = nss_real.ytm(d)
+            brkv   = ((1 + r_nom) / (1 + r_real) - 1) * 100
+            return d / 252, brkv
 
-        if show_comp and comp_date:
-            for pivot_brkv, color, lbl in [
-                (pivot_pre_brkv, C_PRE_1M, f'Bonds  {lbl_1m}'),
-                (pivot_fut_brkv, C_DI1_1M, f'Futuros  {lbl_1m}'),
+        col_nss, col_ff = st.columns(2)
+
+        # ── Left: NSS breakeven ───────────────────────────────────────────────
+        with col_nss:
+            st.markdown('**NSS — Prefixado vs IPCA**')
+            fig_nss_brkv = go.Figure()
+
+            if nss_pre_t is not None and nss_ipca_t is not None:
+                x, y = _nss_brkv_xy(nss_pre_t, nss_ipca_t, range_pre_t, range_ipca_t)
+                if x is not None:
+                    fig_nss_brkv.add_trace(go.Scatter(
+                        x=x, y=y, name=lbl_t,
+                        line=dict(color=C_PRE_T, width=2.5),
+                        hovertemplate='%{y:.2f}%<extra>' + lbl_t + '</extra>',
+                    ))
+            else:
+                fig_nss_brkv.add_annotation(
+                    text='NSS curves unavailable for this date',
+                    xref='paper', yref='paper', x=0.5, y=0.5, showarrow=False,
+                )
+
+            if show_comp and nss_pre_1m is not None and nss_ipca_1m is not None:
+                x, y = _nss_brkv_xy(nss_pre_1m, nss_ipca_1m, range_pre_1m, range_ipca_1m)
+                if x is not None:
+                    fig_nss_brkv.add_trace(go.Scatter(
+                        x=x, y=y, name=lbl_1m,
+                        line=dict(color=C_PRE_1M, width=1.8, dash='dash'),
+                        hovertemplate='%{y:.2f}%<extra>' + lbl_1m + '</extra>',
+                    ))
+
+            fig_nss_brkv.update_layout(
+                xaxis_title='Prazo (anos)',
+                yaxis_title='Breakeven (% a.a.)',
+                yaxis_ticksuffix='%', yaxis_tickformat='.1f',
+                hovermode='x unified', height=400, font=_FONT,
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
+                margin=dict(t=50),
+            )
+            st.plotly_chart(fig_nss_brkv, use_container_width=True)
+
+        # ── Right: flat-forward breakeven ─────────────────────────────────────
+        with col_ff:
+            st.markdown('**Flat-Forward — Bonds vs Futuros**')
+            fig_ff_brkv = go.Figure()
+
+            for pivot_brkv, color, dash, lbl in [
+                (pivot_pre_brkv, C_PRE_T,  'solid', f'Bonds  {lbl_t}'),
+                (pivot_fut_brkv, C_DI1_T,  'solid', f'Futuros  {lbl_t}'),
             ]:
-                x, y = _spot_brkv_curve(pivot_brkv, comp_date)
-                fig_brkv.add_trace(go.Scatter(
+                x, y = _spot_brkv_curve(pivot_brkv, sel_date)
+                fig_ff_brkv.add_trace(go.Scatter(
                     x=x, y=y, name=lbl,
-                    line=dict(color=color, width=1.8, dash='dash'),
+                    line=dict(color=color, width=2.5, dash=dash),
                     hovertemplate='%{y:.2f}%<extra>' + lbl + '</extra>',
                 ))
 
-        fig_brkv.update_layout(
-            xaxis_title='Prazo (anos)',
-            yaxis_title='Breakeven (% a.a.)',
-            yaxis_ticksuffix='%', yaxis_tickformat='.1f',
-            hovermode='x unified', height=420, font=_FONT,
-            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
-            margin=dict(t=60),
-        )
-        st.plotly_chart(fig_brkv, use_container_width=True)
+            if show_comp and comp_date:
+                for pivot_brkv, color, lbl in [
+                    (pivot_pre_brkv, C_PRE_1M, f'Bonds  {lbl_1m}'),
+                    (pivot_fut_brkv, C_DI1_1M, f'Futuros  {lbl_1m}'),
+                ]:
+                    x, y = _spot_brkv_curve(pivot_brkv, comp_date)
+                    fig_ff_brkv.add_trace(go.Scatter(
+                        x=x, y=y, name=lbl,
+                        line=dict(color=color, width=1.8, dash='dash'),
+                        hovertemplate='%{y:.2f}%<extra>' + lbl + '</extra>',
+                    ))
+
+            fig_ff_brkv.update_layout(
+                xaxis_title='Prazo (anos)',
+                yaxis_title='Breakeven (% a.a.)',
+                yaxis_ticksuffix='%', yaxis_tickformat='.1f',
+                hovermode='x unified', height=400, font=_FONT,
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
+                margin=dict(t=50),
+            )
+            st.plotly_chart(fig_ff_brkv, use_container_width=True)
 
         st.markdown('---')
 
