@@ -44,7 +44,7 @@ DU_GRID = np.array([126, 252, 378, 504, 630, 756, 882, 1008,
                     2016, 2142, 2268, 2394, 2520], dtype=float)
 
 _MIN_R2      = 0.85   # below this, treat fit as failed and reset warm start
-_RATE_LO_PCT = -2.0   # fitted NSS rate floor (%)
+_RATE_LO_PCT = -10.0  # fitted NSS rate floor (% — real rates hit -2% during COVID)
 _RATE_HI_PCT = 60.0   # fitted NSS rate ceiling (%)
 
 
