@@ -171,6 +171,7 @@ def fit_nss(
     lam2_grid:    np.ndarray | None = None,
     n_starts:     int = 3,
     global_search: bool = False,
+    min_lam_sep:  float = 0.10,
 ) -> NSSResult:
     """
     Fit Nelson-Siegel-Svensson to bootstrapped zero rates.
@@ -259,6 +260,8 @@ def fit_nss(
             lam_trial = list(fixed_val)
             for fi, xi in zip(free_idx, x_free):
                 lam_trial[fi] = float(xi)
+            if lam_trial[0] - lam_trial[1] < min_lam_sep:
+                return 1e12
             _, ssr = _wls(lam_trial[0], lam_trial[1])
             return ssr
 
@@ -273,7 +276,7 @@ def fit_nss(
             def _obj_de(x):
                 l1 = float(x[0])
                 l2 = float(x[1])
-                if l1 <= l2 or l2 <= 0:
+                if l1 - l2 < min_lam_sep or l2 <= 0:
                     return 1e12
                 _, ssr = _wls(l1, l2)
                 return ssr
@@ -298,8 +301,8 @@ def fit_nss(
             grid_results = []   # list of (lam_array, ssr)
             for l1 in l1_candidates:
                 for l2 in l2_candidates:
-                    if lam1 is None and lam2 is None and l1 <= l2:
-                        continue   # DL convention: λ₁ > λ₂
+                    if lam1 is None and lam2 is None and l1 - l2 < min_lam_sep:
+                        continue   # DL convention: λ₁ > λ₂ with minimum separation
                     beta, ssr = _wls(l1, l2)
                     if beta is not None:
                         grid_results.append((np.array([l1, l2]), ssr))
