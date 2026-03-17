@@ -107,7 +107,11 @@ def _build_anniv_dates(
     """
     dates = [VNA_BASE_DATE]
     y, m  = start.year, start.month
-    while pd.Timestamp(y, m, 1) <= end:
+    # extend one month beyond end so the current accrual interval (d_curr > end)
+    # is always included — without it, projected_ipca for the current month has
+    # no effect because the (d_prev → d_curr) loop iteration never runs.
+    limit = end + pd.DateOffset(months=1)
+    while pd.Timestamp(y, m, 1) <= limit:
         dates.append(_anniv_date(y, m))
         m += 1
         if m > 12:
@@ -211,4 +215,5 @@ def build_vna(
         du_arr       = np.arange(1, len(days_in_interval) + 1, dtype=float)
         vna[days_in_interval] = vna_prev * (ratio ** (du_arr / du_total))
 
-    return vna.dropna().sort_index()
+    vna = vna.dropna().sort_index()
+    return vna[vna.index <= end_date]   # clip — annivs extended one month beyond end_date
