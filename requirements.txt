@@ -2,6 +2,7 @@ streamlit>=1.32
 plotly>=5.18
 pandas>=2.0
 numpy>=1.26
+scipy>=1.11
 pyarrow>=14.0
 openpyxl>=3.1
 bizdays>=1.0
