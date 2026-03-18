@@ -46,6 +46,102 @@ from scipy.optimize import brentq
 from .prefixado import price_ltn, price_ntnf
 
 
+# ── convexity ─────────────────────────────────────────────────────────────────
+
+def convexity_zerocoupon(ytm: float, du: int) -> float:
+    """
+    Convexity of a zero-coupon bond (BUS/252 annual compounding).
+
+    C = t × (t + 1/252) / (1 + ytm)²,   t = du / 252.
+    Units: years².  Price impact ≈ ½ × C × (Δy)² × price.
+    """
+    t = du / 252.0
+    return t * (t + 1.0 / 252.0) / (1.0 + ytm) ** 2
+
+
+def convexity_coupon(
+    cf_du: np.ndarray,
+    cashflows: np.ndarray,
+    ytm: float,
+) -> float:
+    """
+    Convexity of a coupon bond (BUS/252 annual compounding).
+
+    C = (1/P) × Σ CF_k × t_k × (t_k + 1/252) / (1 + ytm)^(t_k + 2)
+
+    Parameters
+    ----------
+    cf_du     : business days to each cashflow
+    cashflows : cashflow amounts (same units as price)
+    ytm       : annual yield (decimal)
+
+    Returns
+    -------
+    float — convexity in years²
+    """
+    t  = np.asarray(cf_du,     dtype=float) / 252.0
+    cf = np.asarray(cashflows, dtype=float)
+    df = (1.0 + ytm) ** (-t)
+    P  = float(np.dot(cf, df))
+    if P == 0.0:
+        return 0.0
+    return float(np.dot(cf * t * (t + 1.0 / 252.0), df)) / P / (1.0 + ytm) ** 2
+
+
+# ── risk metrics ──────────────────────────────────────────────────────────────
+
+def risk_metrics(
+    tri: pd.Series,
+    rf: float = 0.0,
+    periods_per_year: int = 252,
+) -> dict:
+    """
+    Standard risk/return metrics on a total return index.
+
+    Parameters
+    ----------
+    tri              : pd.Series — daily TRI (any base level, e.g. 100)
+    rf               : constant daily risk-free rate (decimal, default 0)
+    periods_per_year : trading periods per year (default 252)
+
+    Returns
+    -------
+    dict with keys: ann_return, ann_vol, sharpe, sortino, max_drawdown,
+                    calmar, var_95, cvar_95, skew, kurt
+    """
+    tri  = pd.Series(tri).dropna()
+    rets = tri.pct_change().dropna()
+    exc  = rets - rf
+    p    = periods_per_year
+
+    ann_ret = float(rets.mean() * p)
+    ann_vol = float(rets.std()  * np.sqrt(p))
+    sharpe  = float(exc.mean() / rets.std() * np.sqrt(p)) if rets.std() > 0 else np.nan
+    d_std   = rets[rets < rf].std()
+    sortino = float(exc.mean() / d_std * np.sqrt(p)) if d_std > 0 else np.nan
+
+    roll_max = tri.cummax()
+    dd       = (tri - roll_max) / roll_max
+    max_dd   = float(dd.min())
+    calmar   = (ann_ret / abs(max_dd)) if max_dd != 0 else np.nan
+
+    var95  = float(np.percentile(rets, 5))
+    cvar95 = float(rets[rets <= var95].mean()) if (rets <= var95).any() else var95
+
+    return {
+        'ann_return'  : round(ann_ret, 6),
+        'ann_vol'     : round(ann_vol, 6),
+        'sharpe'      : round(sharpe,  4),
+        'sortino'     : round(sortino, 4),
+        'max_drawdown': round(max_dd,  6),
+        'calmar'      : round(calmar,  4),
+        'var_95'      : round(var95,   6),
+        'cvar_95'     : round(cvar95,  6),
+        'skew'        : round(float(rets.skew()), 4),
+        'kurt'        : round(float(rets.kurt()), 4),
+    }
+
+
 # ── duration and DV01 ─────────────────────────────────────────────────────────
 
 def bond_duration(

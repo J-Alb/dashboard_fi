@@ -76,7 +76,13 @@ from .analytics import (
     ret_index,
     du_for_mod_dur,
     build_cd_series,
+    convexity_zerocoupon,
+    convexity_coupon,
+    risk_metrics,
 )
+
+# ── portfolio layer ────────────────────────────────────────────────────────────
+from .portfolio import Instrument, Position, Portfolio
 
 # ── VNA (NTN-B IPCA accrual) ──────────────────────────────────────────────────
 from .vna import fetch_ipca_index, build_vna
@@ -117,6 +123,9 @@ __all__ = [
     # analytics
     'bond_duration', 'add_duration',
     'cm_tri', 'ret_index', 'du_for_mod_dur', 'build_cd_series',
+    'convexity_zerocoupon', 'convexity_coupon', 'risk_metrics',
+    # portfolio
+    'Instrument', 'Position', 'Portfolio',
     # derivatives — DI1 futures
     'DI1Contract', 'di1_price', 'di1_dv01', 'DI1Curve',
     # derivatives — DAP (Cupom de IPCA futures)

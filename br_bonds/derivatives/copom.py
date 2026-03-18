@@ -265,6 +265,7 @@ class CopomCurve:
                   self._di1.overnight, bdays_meeting, du_max, self._lamb),
             method='L-BFGS-B',
             bounds=bounds,
+            options={'maxfun': 100_000, 'maxiter': 10_000},
         )
         if not result.success:
             warnings.warn(f"CopomCurve: optimisation did not converge — {result.message}")
