@@ -24,6 +24,9 @@ import numpy as np
 import pandas as pd
 from bizdays import Calendar
 
+from .._interpolation import _mat_adj
+from ._common import _zcbond_price, _zcbond_dv01_magnitude
+
 
 @dataclass
 class DAPContract:
@@ -62,7 +65,7 @@ def dap_price(rate: float, du: int) -> float:
     -------
     float — price in R$ (notional 100 000)
     """
-    return 100_000.0 / (1.0 + rate) ** (du / 252.0)
+    return _zcbond_price(rate, du)
 
 
 def dap_dv01(rate: float, du: int) -> float:
@@ -73,7 +76,7 @@ def dap_dv01(rate: float, du: int) -> float:
     -------
     float — R$ change per 1bp per contract (always negative)
     """
-    return -(du / 252.0) * dap_price(rate, du) / (1.0 + rate) * 1e-4
+    return -_zcbond_dv01_magnitude(rate, du)
 
 
 def dap_rate(price: float, du: int) -> float:
@@ -123,11 +126,8 @@ def dap_from_df(
     out[date_col]  = pd.to_datetime(out[date_col])
     out[mat_col]   = pd.to_datetime(out[mat_col])
 
-    def _mat_adj(mat: pd.Timestamp) -> pd.Timestamp:
-        return pd.Timestamp(cal.adjust_next(mat)) if not cal.isbizday(mat) else mat
-
     out['du']    = out.apply(
-        lambda r: cal.bizdays(r[date_col], _mat_adj(r[mat_col])), axis=1
+        lambda r: cal.bizdays(r[date_col], _mat_adj(r[mat_col], cal)), axis=1
     )
     out['rate']  = out[rate_col] / 100.0
     out['price'] = out.apply(lambda r: dap_price(r['rate'], r['du']), axis=1)

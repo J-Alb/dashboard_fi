@@ -36,6 +36,7 @@ from scipy.optimize import minimize
 from bizdays import Calendar
 
 from .di1 import DI1Curve
+from .._interpolation import flatfwd_batch as _flatfwd_batch
 
 # ── COPOM meeting schedule ─────────────────────────────────────────────────────
 # Update annually. Dates sourced from BCB official calendar.
@@ -138,21 +139,6 @@ def fetch_overnight(refdate=None) -> float:
 
 
 # ── internal helpers ───────────────────────────────────────────────────────────
-
-def _flatfwd_batch(du_verts: np.ndarray, df_verts: np.ndarray, du_grid: np.ndarray) -> np.ndarray:
-    """
-    Vectorised flat-forward discount factors for a du grid.
-
-    du_grid must be within [du_verts[0], du_verts[-1]]; values outside are
-    clipped to the nearest segment (mirrors flatfwd_df boundary behaviour).
-    """
-    idx    = np.searchsorted(du_verts, du_grid, side='right') - 1
-    idx    = np.clip(idx, 0, len(du_verts) - 2)
-    du1    = du_verts[idx];  du2 = du_verts[idx + 1]
-    df1    = df_verts[idx];  df2 = df_verts[idx + 1]
-    w      = (du_grid - du1) / (du2 - du1)
-    return df1 * (df2 / df1) ** w
-
 
 def _objective(
     C: np.ndarray,

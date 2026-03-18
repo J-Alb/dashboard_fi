@@ -14,11 +14,17 @@ TESOURO_MAP
 load_secondary_data(file_path, codes)
     Load and clean BCB secondary market parquet file.
 
+get_pu_series(raw, sigla, mat_str, isin)
+    Volume-weighted average PU per trading date for a specific bond (ISIN).
+
 get_pre_curve(dta, date)
     Filter prefixado (LTN + NTN-F) bonds for a given date.
 
 get_ntnb_curve(dta, date)
     Filter NTN-B bonds for a given date.
+
+parse_ativo(code, itype, cal)
+    Parse a B3 ATIVO code (e.g. 'DAPK25', 'DI1K25') to its expiry Timestamp.
 
 build_breakeven_panel(dta, vna_series, dates, du_brkv, cdates, n_jobs, verbose)
     Build daily breakeven panel for a list of dates (parallel-safe).
@@ -32,6 +38,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from bizdays import Calendar
+
+from ._interpolation import flatfwd_batch
 
 _CAL = Calendar.load('ANBIMA')
 
@@ -116,6 +124,40 @@ def load_secondary_data(
         lambda r: cal.bizdays(r['date'], _mat_adj(r['maturity'])), axis=1
     )
     return raw
+
+
+def get_pu_series(
+    raw: pd.DataFrame,
+    sigla: str,
+    mat_str: str,
+    isin: str,
+) -> pd.Series:
+    """
+    Volume-weighted average PU per trading date for a specific bond (ISIN).
+
+    Parameters
+    ----------
+    raw     : raw BCB secondary market DataFrame with original column names
+              (data_mov, sigla, vencimento, codigo_isin, quant_negociada, pu_med).
+    sigla   : bond type string, e.g. 'NTN-B', 'NTN-F', 'LTN'.
+    mat_str : maturity date string, e.g. '2035-05-15'.
+    isin    : ISIN code, e.g. 'BRSTNCNTB0O7'.
+
+    Returns
+    -------
+    pd.Series of volume-weighted PU indexed by date, sorted and NaN-dropped.
+    """
+    sub = raw[
+        (raw['sigla'] == sigla) &
+        (raw['vencimento'] == mat_str) &
+        (raw['codigo_isin'] == isin)
+    ].copy()
+    sub['wt'] = sub['quant_negociada'] * sub['pu_med']
+    g = sub.groupby('data_mov').agg(
+        wt_sum=('wt', 'sum'),
+        vol=('quant_negociada', 'sum'),
+    )
+    return (g['wt_sum'] / g['vol']).rename('pu').sort_index().dropna()
 
 
 # ── curve filter functions ─────────────────────────────────────────────────────
@@ -251,20 +293,21 @@ def _flatfwd_ytm(zc_df: pd.DataFrame, du_arr: np.ndarray) -> np.ndarray:
     - du < dus[0]  → first zero rate (flat at short end)
     - du > dus[-1] → last zero rate  (flat at long end)
     """
-    dus = zc_df['du'].values.astype(float)
-    zrs = zc_df['zero_rate'].values.astype(float)
-    dfs = (1.0 + zrs) ** (-dus / 252.0)
-    out = np.empty(len(du_arr))
-    for i, du in enumerate(du_arr):
-        if du <= dus[0]:
-            out[i] = zrs[0]
-        elif du >= dus[-1]:
-            out[i] = zrs[-1]
-        else:
-            j  = min(np.searchsorted(dus, du, side='right') - 1, len(dus) - 2)
-            t  = (du - dus[j]) / (dus[j + 1] - dus[j]) if dus[j + 1] != dus[j] else 0.0
-            df = dfs[j] * (dfs[j + 1] / dfs[j]) ** t
-            out[i] = df ** (-252.0 / du) - 1.0
+    dus    = zc_df['du'].values.astype(float)
+    zrs    = zc_df['zero_rate'].values.astype(float)
+    dfs    = (1.0 + zrs) ** (-dus / 252.0)
+    du_arr = np.asarray(du_arr, dtype=float)
+
+    lo  = du_arr <= dus[0]
+    hi  = du_arr >= dus[-1]
+    mid = ~lo & ~hi
+
+    out      = np.empty(len(du_arr))
+    out[lo]  = zrs[0]
+    out[hi]  = zrs[-1]
+    if mid.any():
+        df_mid    = flatfwd_batch(dus, dfs, du_arr[mid])
+        out[mid]  = df_mid ** (-252.0 / du_arr[mid]) - 1.0
     return out
 
 
@@ -551,6 +594,13 @@ def build_breakeven_panel(
 _B3_MONTH = {'F': 1, 'G': 2, 'H': 3, 'J': 4, 'K': 5, 'M': 6,
              'N': 7, 'Q': 8, 'U': 9, 'V': 10, 'X': 11, 'Z': 12}
 
+# Portuguese month abbreviations used in pre-2006 B3 VENCIMENTO codes
+# e.g. 'ABR0' = April 2000, 'NOV1' = November 2001
+_PT_MONTH = {
+    'JAN': 1, 'FEV': 2, 'MAR': 3, 'ABR': 4, 'MAI': 5, 'JUN': 6,
+    'JUL': 7, 'AGO': 8, 'SET': 9, 'OUT': 10, 'NOV': 11, 'DEZ': 12,
+}
+
 
 def _b3_code_to_date(code: str, expiry_day: int = 1) -> pd.Timestamp:
     """
@@ -567,14 +617,65 @@ def _b3_code_to_date(code: str, expiry_day: int = 1) -> pd.Timestamp:
     return pd.Timestamp(y, m, expiry_day)
 
 
+def parse_ativo(
+    code: str,
+    itype: str,
+    cal: Calendar | None = None,
+) -> pd.Timestamp:
+    """
+    Parse a B3 ATIVO code to its expiry Timestamp.
+
+    Strips the instrument prefix before parsing, so both 6-char codes
+    ('DAPK25') and 5-char codes with single-digit year ('DAPK5') work
+    correctly. Applies a business-day adjustment to the raw expiry date.
+
+    Parameters
+    ----------
+    code  : ATIVO ticker, e.g. 'DAPK25', 'DI1N27', or bare suffix 'K25'.
+    itype : Instrument prefix, e.g. 'DAP', 'DI1'.
+            DAP → expiry on the 15th calendar day of the month.
+            All others → expiry on the 1st business day of the month.
+    cal   : ANBIMA calendar for business-day adjustment (default: module _CAL).
+
+    Returns
+    -------
+    pd.Timestamp of the expiry date, adjusted to the next business day if needed.
+    """
+    if cal is None:
+        cal = _CAL
+    code       = code.strip()
+    suffix     = code[len(itype):].strip() if code.upper().startswith(itype.upper()) else code
+    expiry_day = 15 if itype.upper() == 'DAP' else 1
+    d = _b3_code_to_date(suffix, expiry_day)
+    return pd.Timestamp(cal.adjust_next(d) if not cal.isbizday(d) else d)
+
+
 def _parse_vencimento(s: pd.Series, expiry_day: int = 1) -> pd.Series:
-    """Parse VENCIMENTO — handles both date strings and B3 contract codes."""
+    """
+    Parse VENCIMENTO column to Timestamps.
+
+    Handles three formats:
+    - B3 single-letter code  : 'K26', 'F07'  (len ≤ 3)
+    - Portuguese abbreviation: 'ABR0', 'NOV1' (3-letter month + digit(s), pre-2006)
+    - ISO date string        : '2026-05-15'
+    """
     first = str(s.dropna().iloc[0]) if len(s.dropna()) > 0 else ''
-    if len(first) <= 3:   # contract code like 'K26', 'F07'
+
+    if len(first) <= 3:   # modern B3 code like 'K26'
         return s.apply(
             lambda v: _b3_code_to_date(str(v), expiry_day) if pd.notna(v) else pd.NaT
         )
-    return pd.to_datetime(s)
+
+    if first[:3].upper() in _PT_MONTH:   # pre-2006 Portuguese code like 'ABR0'
+        def _pt(v: str) -> pd.Timestamp:
+            m = _PT_MONTH.get(v[:3].upper())
+            if m is None:
+                return pd.NaT
+            y = 2000 + int(v[3:])
+            return pd.Timestamp(y, m, expiry_day)
+        return s.apply(lambda v: _pt(str(v)) if pd.notna(v) else pd.NaT)
+
+    return pd.to_datetime(s, errors='coerce')
 
 
 def _futures_to_zero_curve(
@@ -722,3 +823,167 @@ def build_breakeven_futures(
     if verbose:
         print(f"\nPanel (futures): {len(out_list)} dates, {len(panel)} rows")
     return panel
+
+
+# ── NSS panel ─────────────────────────────────────────────────────────────────
+
+_NSS_MIN_R2      = 0.85    # below this, treat fit as failed and reset warm start
+_NSS_RATE_LO_PCT = -10.0   # fitted rate floor (real rates hit ~-2% during COVID)
+_NSS_RATE_HI_PCT =  60.0   # fitted rate ceiling
+
+_NSS_DU_GRID = np.array([
+    126, 252, 378, 504, 630, 756, 882, 1008,
+    1134, 1260, 1386, 1512, 1638, 1764, 1890,
+    2016, 2142, 2268, 2394, 2520,
+], dtype=float)
+
+
+def _nss_fit_one(
+    du: np.ndarray,
+    rates_pct: np.ndarray,
+    prev_lam: tuple[float, float] | None,
+    n_starts_cold: int = 5,
+):
+    """
+    Fit NSS to zero rates (in %). Warm-starts from prev_lam when provided;
+    falls back to a full cold-start grid if the warm result is degenerate.
+
+    Returns NSSResult, or None if fitting fails / result is degenerate.
+    """
+    from br_bonds.nss import fit_nss, NSSResult
+
+    rates = rates_pct / 100.0
+    mask  = np.isfinite(rates) & (du > 0)
+    du_ok, rates_ok = du[mask], rates[mask]
+    if len(du_ok) < 4:
+        return None
+
+    def _degenerate(nss: 'NSSResult') -> bool:
+        if nss.r2 < _NSS_MIN_R2:
+            return True
+        fitted_pct = nss.ytm(du_ok) * 100
+        return bool(np.any(fitted_pct < _NSS_RATE_LO_PCT) or
+                    np.any(fitted_pct > _NSS_RATE_HI_PCT))
+
+    try:
+        if prev_lam is not None:
+            nss = fit_nss(
+                du_ok, rates_ok,
+                lam1_grid=np.array([prev_lam[0]]),
+                lam2_grid=np.array([prev_lam[1]]),
+                n_starts=1,
+            )
+        else:
+            nss = fit_nss(du_ok, rates_ok, n_starts=n_starts_cold)
+    except Exception:
+        return None
+
+    if _degenerate(nss):
+        if prev_lam is None:
+            return None
+        try:
+            nss = fit_nss(du_ok, rates_ok, n_starts=n_starts_cold)
+        except Exception:
+            return None
+        if _degenerate(nss):
+            return None
+
+    return nss
+
+
+def build_nss_panel(
+    panel: pd.DataFrame,
+    du_grid: np.ndarray | None = None,
+    date_from: str | pd.Timestamp | None = None,
+    date_to:   str | pd.Timestamp | None = None,
+    verbose: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Fit Nelson-Siegel-Svensson curves to a flat-forward breakeven panel,
+    using a warm-start chain for speed and parameter smoothness.
+
+    Parameters
+    ----------
+    panel     : long-format DataFrame with columns date, du, r_nominal, r_real
+                (output of build_breakeven_panel or build_breakeven_futures).
+                Values in % p.a.
+    du_grid   : tenors (business days) at which to record results.
+                Default: 126 to 2520 in steps of 126.
+    date_from : first date to process (inclusive). Default: all.
+    date_to   : last  date to process (inclusive). Default: all.
+    verbose   : print progress every 20 dates.
+
+    Returns
+    -------
+    nss_panel  : DataFrame — date, du, r_nominal, r_real, breakeven (% p.a.)
+    nss_params : DataFrame — date, curve, b1..b4, l1, l2, rmse_bps, r2
+    """
+    if du_grid is None:
+        du_grid = _NSS_DU_GRID
+
+    pb = panel.copy()
+    pb['date'] = pd.to_datetime(pb['date'])
+    if date_from is not None:
+        pb = pb[pb['date'] >= pd.Timestamp(date_from)]
+    if date_to is not None:
+        pb = pb[pb['date'] <= pd.Timestamp(date_to)]
+
+    pivot_nom  = pb.pivot_table(values='r_nominal', columns='du', index='date')
+    pivot_real = pb.pivot_table(values='r_real',    columns='du', index='date')
+    dates      = pivot_nom.index.intersection(pivot_real.index).sort_values()
+    du_cols    = np.array(pivot_nom.columns, dtype=float)
+
+    prev_lam_nom  = None
+    prev_lam_real = None
+    panel_rows: list[dict] = []
+    param_rows: list[dict] = []
+    n_ok = n_skip = 0
+
+    for i, ts in enumerate(dates):
+        row_nom  = pivot_nom.loc[ts].values.astype(float)
+        row_real = pivot_real.loc[ts].values.astype(float)
+
+        nss_nom  = _nss_fit_one(du_cols, row_nom,  prev_lam_nom)
+        nss_real = _nss_fit_one(du_cols, row_real, prev_lam_real)
+
+        if nss_nom is None or nss_real is None:
+            n_skip += 1
+        else:
+            prev_lam_nom  = (float(nss_nom.lam[0]),  float(nss_nom.lam[1]))
+            prev_lam_real = (float(nss_real.lam[0]), float(nss_real.lam[1]))
+            n_ok += 1
+
+            r_nom_g  = nss_nom.ytm(du_grid)  * 100
+            r_real_g = nss_real.ytm(du_grid) * 100
+            brkv_g   = ((1 + r_nom_g / 100) / (1 + r_real_g / 100) - 1) * 100
+
+            for j, du in enumerate(du_grid):
+                panel_rows.append({
+                    'date':      ts,
+                    'du':        int(du),
+                    'r_nominal': round(r_nom_g[j],  6),
+                    'r_real':    round(r_real_g[j], 6),
+                    'breakeven': round(brkv_g[j],   6),
+                })
+
+            for label, nss in [('nominal', nss_nom), ('real', nss_real)]:
+                param_rows.append({
+                    'date':     ts,
+                    'curve':    label,
+                    'b1':       round(nss.beta[0] * 100, 6),
+                    'b2':       round(nss.beta[1] * 100, 6),
+                    'b3':       round(nss.beta[2] * 100, 6),
+                    'b4':       round(nss.beta[3] * 100, 6),
+                    'l1':       round(nss.lam[0],  6),
+                    'l2':       round(nss.lam[1],  6),
+                    'rmse_bps': round(nss.rmse * 10_000, 4),
+                    'r2':       round(nss.r2, 6),
+                })
+
+        if verbose and (i + 1) % 20 == 0:
+            print(f'  {i+1:>5}/{len(dates)}  ok={n_ok}  skip={n_skip}', flush=True)
+
+    if verbose:
+        print(f'  Finished: {n_ok} dates fitted, {n_skip} skipped.')
+
+    return pd.DataFrame(panel_rows), pd.DataFrame(param_rows)

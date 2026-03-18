@@ -64,7 +64,11 @@ from .ntnb import price_ntnb
 from .lft import price_lft
 from .derivatives.di1 import di1_price, di1_dv01
 from .derivatives.dap import dap_price, dap_dv01
-from ._schedules import ntnb_cashflow_schedule, bond_cashflow_schedule
+from ._schedules import (
+    ntnb_cashflow_schedule,
+    bond_cashflow_schedule,
+    ntnb_coupon_dates_for_bond,
+)
 from .analytics import convexity_zerocoupon, convexity_coupon, cm_tri
 
 
@@ -97,25 +101,6 @@ def _ntnf_coupon_dates(
         for d in raw
     )
 
-
-def _ntnb_coupon_dates_for_bond(
-    maturity: pd.Timestamp,
-    start:    pd.Timestamp,
-    end:      pd.Timestamp,
-    cal:      Calendar,
-) -> list[pd.Timestamp]:
-    """
-    Coupon dates for a specific NTN-B bond (6-month grid aligned to
-    maturity day-of-month), ANBIMA-adjusted, in [start, end].
-    """
-    dates: list[pd.Timestamp] = []
-    d = maturity
-    while d >= start - pd.DateOffset(months=6):
-        adj = pd.Timestamp(cal.adjust_next(d) if not cal.isbizday(d) else d)
-        if start <= adj <= end:
-            dates.append(adj)
-        d = d - pd.DateOffset(months=6)
-    return sorted(set(dates))
 
 
 # ── Instrument ────────────────────────────────────────────────────────────────
@@ -376,7 +361,7 @@ class Instrument:
         if self.itype == 'NTNB':
             if self.maturity is None:
                 raise ValueError("NTNB.coupon_dates() requires maturity")
-            return _ntnb_coupon_dates_for_bond(self.maturity, s, e, cal)
+            return ntnb_coupon_dates_for_bond(self.maturity, s, e, cal)
         return []
 
     def coupon_payment(self, vna: float | None = None) -> float:

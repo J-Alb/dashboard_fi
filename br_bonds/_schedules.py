@@ -21,6 +21,9 @@ ntnb_cashflow_schedule(date, mat, cal, coupon, face, freq)
 
 ntnb_coupon_dates(start, end, cal)
     Generate the full ANBIMA-adjusted NTN-B semiannual coupon date grid.
+
+ntnb_coupon_dates_for_bond(maturity, start, end, cal)
+    Coupon dates for a specific NTN-B bond aligned to its maturity month/day.
 """
 
 from __future__ import annotations
@@ -219,3 +222,34 @@ def ntnb_coupon_dates(
         ])
 
     return raw.sort_values()
+
+
+def ntnb_coupon_dates_for_bond(
+    maturity: pd.Timestamp,
+    start:    pd.Timestamp,
+    end:      pd.Timestamp,
+    cal:      Calendar,
+) -> list[pd.Timestamp]:
+    """
+    Coupon dates for a specific NTN-B bond (6-month grid aligned to
+    maturity day-of-month), ANBIMA-adjusted, in [start, end].
+
+    Parameters
+    ----------
+    maturity : bond maturity date (unadjusted)
+    start    : window start (inclusive)
+    end      : window end   (inclusive)
+    cal      : ANBIMA Calendar
+
+    Returns
+    -------
+    Sorted list of adjusted coupon Timestamps within [start, end].
+    """
+    dates: list[pd.Timestamp] = []
+    d = maturity
+    while d >= start - pd.DateOffset(months=6):
+        adj = pd.Timestamp(cal.adjust_next(d) if not cal.isbizday(d) else d)
+        if start <= adj <= end:
+            dates.append(adj)
+        d = d - pd.DateOffset(months=6)
+    return sorted(set(dates))

@@ -49,12 +49,13 @@ from .ntnb import price_ntnb, ytm_ntnb, ntnb_tri, NTNBCurve
 from .lft import price_lft, ytm_lft, LFTCurve, fetch_vna_selic
 
 # ── interpolation schedules (semi-public) ─────────────────────────────────────
-from ._interpolation import flatfwd_df, interp_yield
+from ._interpolation import flatfwd_df, interp_yield, flatfwd_batch
 from ._schedules import (
     price_from_schedule,
     bond_cashflow_schedule,
     ntnb_cashflow_schedule,
     ntnb_coupon_dates,
+    ntnb_coupon_dates_for_bond,
 )
 
 # ── NSS yield curve ────────────────────────────────────────────────────────────
@@ -91,10 +92,13 @@ from .vna import fetch_ipca_index, build_vna
 from .secondary import (
     TESOURO_MAP,
     load_secondary_data,
+    get_pu_series,
     get_pre_curve,
     get_ntnb_curve,
+    parse_ativo,
     build_breakeven_panel,
     build_breakeven_futures,
+    build_nss_panel,
 )
 
 # ── derivatives ───────────────────────────────────────────────────────────────
@@ -114,9 +118,9 @@ __all__ = [
     'fetch_vna_selic',
     # schedules
     'price_from_schedule', 'bond_cashflow_schedule',
-    'ntnb_cashflow_schedule', 'ntnb_coupon_dates',
+    'ntnb_cashflow_schedule', 'ntnb_coupon_dates', 'ntnb_coupon_dates_for_bond',
     # interpolation
-    'flatfwd_df', 'interp_yield',
+    'flatfwd_df', 'interp_yield', 'flatfwd_batch',
     # NSS
     'NSSResult', 'nss_ytm', 'fit_nss',
     'fit_nss_bonds', 'fit_nss_prefixado', 'fit_nss_ntnb', 'fit_nss_anbima',
@@ -137,7 +141,7 @@ __all__ = [
     # VNA
     'fetch_ipca_index', 'build_vna',
     # secondary market / implied curves
-    'TESOURO_MAP', 'load_secondary_data',
-    'get_pre_curve', 'get_ntnb_curve',
-    'build_breakeven_panel', 'build_breakeven_futures',
+    'TESOURO_MAP', 'load_secondary_data', 'get_pu_series',
+    'get_pre_curve', 'get_ntnb_curve', 'parse_ativo',
+    'build_breakeven_panel', 'build_breakeven_futures', 'build_nss_panel',
 ]

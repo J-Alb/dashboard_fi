@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from .._interpolation import flatfwd_df
+from ._common import _zcbond_price, _zcbond_dv01_magnitude
 
 
 @dataclass
@@ -57,7 +58,7 @@ def di1_price(rate: float, du: int) -> float:
     -------
     float — price in R$ (notional 100 000)
     """
-    return 100_000.0 / (1.0 + rate) ** (du / 252.0)
+    return _zcbond_price(rate, du)
 
 
 def di1_dv01(rate: float, du: int) -> float:
@@ -75,8 +76,7 @@ def di1_dv01(rate: float, du: int) -> float:
     -------
     float — DV01 in R$ per bp per contract (positive)
     """
-    p = di1_price(rate, du)
-    return p * (du / 252.0) / (1.0 + rate) * 1e-4
+    return _zcbond_dv01_magnitude(rate, du)
 
 
 class DI1Curve:
