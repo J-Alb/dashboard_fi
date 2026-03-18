@@ -161,16 +161,61 @@ class Instrument:
         """Business days from date to (adjusted) maturity."""
         return cal.bizdays(pd.Timestamp(date), self.mat_adj(cal))
 
+    # ── exact cashflow schedule ───────────────────────────────────────────────
+
+    def _cashflow_schedule(
+        self,
+        du:   int,
+        date: pd.Timestamp,
+        cal:  Calendar,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """
+        Build the exact ANBIMA cashflow schedule for coupon bonds.
+
+        Returns (cf_du, cashflows) arrays, or None for zero-coupon / futures.
+        Requires maturity to be set; falls back to uniform spacing when absent.
+        """
+        t = self.itype
+        if t == 'NTNF':
+            if self.maturity is not None:
+                raw_cpn = pd.date_range('2000-01-01', '2060-01-01', freq='6MS')
+                cpn_dt  = np.array([
+                    cal.adjust_next(d) if not cal.isbizday(d) else d
+                    for d in raw_cpn
+                ], dtype='datetime64[D]')
+                mat_np  = np.datetime64(self.maturity.date(), 'D')
+                date_np = np.datetime64(pd.Timestamp(date).date(), 'D')
+                return bond_cashflow_schedule(
+                    float(du), self.coupon, self.face, 2,
+                    date_np=date_np, mat_np=mat_np,
+                    cal=cal, coupon_dates=cpn_dt,
+                )
+            return _uniform_schedule(du, self.coupon, self.face)
+        if t == 'NTNB':
+            if self.maturity is not None:
+                return ntnb_cashflow_schedule(
+                    pd.Timestamp(date), self.maturity, cal,
+                    coupon=self.coupon, face=self.face,
+                )
+            return _uniform_schedule(du, self.coupon, self.face)
+        return None   # LTN, LFT, DI1, DAP
+
     # ── pricing ──────────────────────────────────────────────────────────────
 
     def price(
         self,
-        ytm: float,
-        du:  int,
-        vna: float | None = None,
+        ytm:  float,
+        du:   int,
+        vna:  float | None = None,
+        date: pd.Timestamp | None = None,
+        cal:  Calendar | None = None,
     ) -> float:
         """
         Mark-to-market price in R$.
+
+        For NTNF and NTNB, pass date + cal to use the exact ANBIMA coupon
+        schedule (Jan 1 / Jul 1 for NTNF; maturity-aligned for NTNB).
+        Without date + cal the uniform 126-bday spacing is used.
 
         NTNB: cotação × vna / 100 (PU) when vna provided; else cotação.
         LFT : PU = price_lft(ytm, du, vna); requires vna.
@@ -180,9 +225,18 @@ class Instrument:
         if t == 'LTN':
             return price_ltn(ytm, du, face=self.face)
         if t == 'NTNF':
-            return price_ntnf(ytm, du, coupon=self.coupon, face=self.face)
+            if date is not None and cal is not None:
+                cf_du, cfs = self._cashflow_schedule(du, date, cal)
+                p = float(np.sum(cfs / (1.0 + ytm) ** (cf_du / 252.0)))
+            else:
+                p = price_ntnf(ytm, du, coupon=self.coupon, face=self.face)
+            return p
         if t == 'NTNB':
-            cot = price_ntnb(ytm, du, coupon_real=self.coupon, face=self.face)
+            if date is not None and cal is not None:
+                cf_du, cfs = self._cashflow_schedule(du, date, cal)
+                cot = float(np.sum(cfs / (1.0 + ytm) ** (cf_du / 252.0)))
+            else:
+                cot = price_ntnb(ytm, du, coupon_real=self.coupon, face=self.face)
             return cot * vna / 100.0 if vna is not None else cot
         if t == 'LFT':
             if vna is None:
@@ -198,23 +252,26 @@ class Instrument:
 
     def dv01(
         self,
-        ytm: float,
-        du:  int,
-        vna: float | None = None,
+        ytm:  float,
+        du:   int,
+        vna:  float | None = None,
+        date: pd.Timestamp | None = None,
+        cal:  Calendar | None = None,
     ) -> float:
         """
         DV01: R$ price change per +1 bp rise in yield (positive convention).
 
         Uses dedicated formulas for DI1/DAP; central finite difference ±0.5 bp
-        for all others. NTNB result is in R$ when vna provided, else cotação.
+        for all others. Pass date + cal to use exact coupon schedules for
+        NTNF/NTNB. NTNB result is in R$ when vna provided, else cotação.
         """
         if self.itype == 'DI1':
             return di1_dv01(ytm, du)
         if self.itype == 'DAP':
             return abs(dap_dv01(ytm, du))
         eps  = 5e-5          # 0.5 bp → symmetric range = 1 bp
-        p_up = self.price(ytm + eps, du, vna=vna)
-        p_dn = self.price(ytm - eps, du, vna=vna)
+        p_up = self.price(ytm + eps, du, vna=vna, date=date, cal=cal)
+        p_dn = self.price(ytm - eps, du, vna=vna, date=date, cal=cal)
         return -(p_up - p_dn) / 2.0
 
     def convexity(
@@ -237,33 +294,11 @@ class Instrument:
         if t in ('LTN', 'LFT', 'DI1', 'DAP'):
             return convexity_zerocoupon(ytm, du)
 
-        if t == 'NTNF':
-            if date is not None and cal is not None and self.maturity is not None:
-                raw_cpn = pd.date_range('2000-01-01', '2060-01-01', freq='6MS')
-                cpn_dt  = np.array([
-                    cal.adjust_next(d) if not cal.isbizday(d) else d
-                    for d in raw_cpn
-                ], dtype='datetime64[D]')
-                mat_np  = np.datetime64(self.maturity.date(), 'D')
-                date_np = np.datetime64(pd.Timestamp(date).date(), 'D')
-                cf_du, cfs = bond_cashflow_schedule(
-                    float(du), self.coupon, self.face, 2,
-                    date_np=date_np, mat_np=mat_np,
-                    cal=cal, coupon_dates=cpn_dt,
-                )
-                return convexity_coupon(cf_du, cfs, ytm)
-            # uniform-spacing fallback
-            cf_du, cfs = _uniform_schedule(du, self.coupon, self.face)
-            return convexity_coupon(cf_du, cfs, ytm)
-
-        if t == 'NTNB':
-            if date is not None and cal is not None and self.maturity is not None:
-                cf_du, cfs = ntnb_cashflow_schedule(
-                    pd.Timestamp(date), self.maturity, cal,
-                    coupon=self.coupon, face=self.face,
-                )
-                return convexity_coupon(cf_du, cfs, ytm)
-            cf_du, cfs = _uniform_schedule(du, self.coupon, self.face)
+        if t in ('NTNF', 'NTNB'):
+            if date is not None and cal is not None:
+                cf_du, cfs = self._cashflow_schedule(du, date, cal)
+            else:
+                cf_du, cfs = _uniform_schedule(du, self.coupon, self.face)
             return convexity_coupon(cf_du, cfs, ytm)
 
         raise ValueError(t)
@@ -275,6 +310,8 @@ class Instrument:
         n_days:   int = 1,
         vna:      float | None = None,
         vna_next: float | None = None,
+        date:     pd.Timestamp | None = None,
+        cal:      Calendar | None = None,
     ) -> float:
         """
         Carry over n_days business days: price appreciation assuming yield unchanged.
@@ -282,6 +319,7 @@ class Instrument:
         For LFT: pass vna (today) and vna_next (after n_days) to capture Selic
                  accrual. Without vna_next, approximates with the same vna.
         For NTNB with vna: returns carry in R$.
+        Pass date + cal to use exact coupon schedules for NTNF/NTNB.
         Does not include coupon cashflows that fall within the period.
         """
         if self.itype == 'LFT':
@@ -289,20 +327,28 @@ class Instrument:
             if vna is None:
                 raise ValueError("LFT carry requires vna")
             return price_lft(ytm, du - n_days, vna_n) - price_lft(ytm, du, vna)
+        # For NTNF/NTNB with exact schedule: advance the date by n_days biz days
+        if date is not None and cal is not None and self.itype in ('NTNF', 'NTNB'):
+            date_next = pd.Timestamp(cal.offset(date, n_days))
+            return (self.price(ytm, du - n_days, vna=vna_next or vna, date=date_next, cal=cal)
+                    - self.price(ytm, du, vna=vna, date=date, cal=cal))
         return self.price(ytm, du - n_days, vna=vna) - self.price(ytm, du, vna=vna)
 
     def duration(
         self,
-        ytm: float,
-        du:  int,
-        vna: float | None = None,
+        ytm:  float,
+        du:   int,
+        vna:  float | None = None,
+        date: pd.Timestamp | None = None,
+        cal:  Calendar | None = None,
     ) -> tuple[float, float, float]:
         """
         (Macaulay duration, Modified duration, DV01).
         mac_dur, mod_dur in business years; DV01 in R$ per 1 bp.
+        Pass date + cal for exact coupon schedules on NTNF/NTNB.
         """
-        p   = self.price(ytm, du, vna=vna)
-        dv  = self.dv01(ytm,  du, vna=vna)
+        p   = self.price(ytm, du, vna=vna, date=date, cal=cal)
+        dv  = self.dv01(ytm,  du, vna=vna, date=date, cal=cal)
         mod = dv / (p * 1e-4) if p != 0 else 0.0
         mac = mod * (1.0 + ytm)
         return mac, mod, dv
@@ -357,11 +403,12 @@ class Instrument:
         date: pd.Timestamp | None = None,
         cal:  Calendar | None = None,
     ) -> dict:
-        """Single-date analytics dict: price, dv01, convexity, carry, durations."""
-        p    = self.price(ytm, du, vna=vna)
-        dv   = self.dv01(ytm,  du, vna=vna)
+        """Single-date analytics dict: price, dv01, convexity, carry, durations.
+        Pass date + cal for exact coupon schedules on NTNF/NTNB."""
+        p    = self.price(ytm, du, vna=vna, date=date, cal=cal)
+        dv   = self.dv01(ytm,  du, vna=vna, date=date, cal=cal)
         conv = self.convexity(ytm, du, vna=vna, date=date, cal=cal)
-        cry  = self.carry(ytm, du, n_days=1, vna=vna)
+        cry  = self.carry(ytm, du, n_days=1, vna=vna, date=date, cal=cal)
         mod  = dv / (p * 1e-4) if p != 0 else 0.0
         mac  = mod * (1.0 + ytm)
         return {
